@@ -13,12 +13,18 @@ if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Generator, List, Optional
+from typing import Callable, Dict, Generator, List, Optional, Tuple
 
 from openclaw_event_adapter import adapt_raw_event
 from trace_analyzer import REQUIRED_EVENTS, analyze, print_report
 
 AnalyzeCallback = Callable[[Dict], None]
+DEBUG = os.getenv("OPENCLAW_TRACE_DEBUG", "1") == "1"
+
+
+def dlog(msg: str) -> None:
+    if DEBUG:
+        print(f"[reader-debug] {msg}", flush=True)
 
 
 @dataclass
@@ -37,30 +43,52 @@ class TraceBuffer:
         return "dashboard.render.done" in self.seen or all(e in self.seen for e in REQUIRED_EVENTS)
 
 
-def parse_line(line: str) -> Optional[Dict]:
-    line = line.strip()
-    if not line:
-        return None
+def parse_line(line: str) -> Tuple[Optional[Dict], Optional[str]]:
+    raw_line = line.strip()
+    if not raw_line:
+        return None, "empty_line"
+
+    # 支持日志前缀 + JSON 场景，尝试截取第一个 JSON 对象
+    json_part = raw_line
+    if not raw_line.startswith("{"):
+        pos = raw_line.find("{")
+        if pos >= 0:
+            json_part = raw_line[pos:]
 
     try:
-        data = json.loads(line)
+        data = json.loads(json_part)
     except json.JSONDecodeError:
-        return None
+        return None, "invalid_json"
 
     if not isinstance(data, dict):
-        return None
+        return None, "not_dict"
 
     normalized = adapt_raw_event(data)
     if not normalized:
-        return None
+        return None, "adapter_no_event"
 
-    return {
+    event = {
         "name": normalized["event"],
         "timestamp": normalized["ts"],
         "traceId": normalized["traceId"],
         "raw": normalized.get("raw", data),
         "module": normalized.get("module", "unknown"),
     }
+
+    if event["traceId"] == "missing":
+        return None, "missing_trace_id"
+
+    return event, None
+
+
+def classify_result(result: Dict, stale_flush: bool) -> Dict:
+    status = "ok"
+    if stale_flush:
+        status = "timeout"
+    elif result.get("missing"):
+        status = "error"
+    result["status"] = status
+    return result
 
 
 class TraceAggregator:
@@ -75,11 +103,12 @@ class TraceAggregator:
 
         buf = self.traces.setdefault(tid, TraceBuffer(trace_id=tid))
         buf.add(ev)
+        dlog(f"traceId={tid} event={ev['name']} aggregated_events={len(buf.events)} open_traces={len(self.traces)}")
 
         if buf.ready():
             result = analyze({"traceId": tid, "events": buf.events})
             self.traces.pop(tid, None)
-            return [result]
+            return [classify_result(result, stale_flush=False)]
 
         return []
 
@@ -89,7 +118,9 @@ class TraceAggregator:
         results: List[Dict] = []
         for tid in stale:
             buf = self.traces.pop(tid)
-            results.append(analyze({"traceId": tid, "events": buf.events}))
+            result = analyze({"traceId": tid, "events": buf.events})
+            results.append(classify_result(result, stale_flush=True))
+            dlog(f"traceId={tid} stale_flush timeout open_traces={len(self.traces)}")
         return results
 
 
@@ -97,10 +128,12 @@ def tail_events(log_path: str, from_beginning: bool = False, poll_interval: floa
     fp = None
     inode = None
     offset_to_end = not from_beginning
+    read_count = 0
 
     while True:
         path = Path(log_path)
         if not path.exists():
+            dlog(f"waiting_log_file path={log_path}")
             time.sleep(poll_interval)
             continue
 
@@ -110,18 +143,26 @@ def tail_events(log_path: str, from_beginning: bool = False, poll_interval: floa
                 fp.close()
             fp = open(log_path, "r", encoding="utf-8")
             inode = stat.st_ino
+            dlog(f"opened_log_file path={log_path} inode={inode}")
             if offset_to_end:
                 fp.seek(0, os.SEEK_END)
                 offset_to_end = False
+                dlog("seek_to_end_for_tail_mode")
 
         line = fp.readline()
         if not line:
             time.sleep(poll_interval)
             continue
 
-        ev = parse_line(line)
-        if ev is not None:
-            yield ev
+        read_count += 1
+        dlog(f"line_read_count={read_count} bytes={len(line)}")
+        ev, reason = parse_line(line)
+        if ev is None:
+            dlog(f"line_skipped reason={reason}")
+            continue
+
+        dlog(f"line_parsed_ok event={ev['name']} traceId={ev['traceId']} module={ev['module']}")
+        yield ev
 
 
 def process_file(

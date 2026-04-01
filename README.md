@@ -1,79 +1,90 @@
-# openclaw-trace
+# OpenClaw Web 实时监控（验收优先）
 
-## 代码改造目标（仓库侧）
-本仓库只负责：
-1) 适配真实 OpenClaw 日志为标准 JSONL 事件流；
-2) 实时聚合 + 分析 + WebSocket 推送；
-3) React Flow 实时可视化。
+## 当前验收目标
+只修这一条链路：
+真实 OpenClaw 日志新增 -> reader 解析聚合 -> ws 广播 -> 前端实时新增记录。
 
-## 关键文件与作用
+## 改动文件与作用
 
 - `src/openclaw_event_adapter.py`
-  - 将真实 OpenClaw 日志结构适配为标准事件：`{ts, traceId, event, module}`。
-  - 支持字段别名：`timestamp/time/@timestamp`、`trace_id/x-trace-id/headers.x-trace-id`、`event/name/stage`。
+  - 适配真实日志形态（包括 `{"0":"...","1":"...","_meta":{...},"time":"..."}`）
+  - 明确提取：event / traceId / ts / module
+  - traceId 缺失时尝试 `_meta.request_id/message_id/conversation_id` 生成 `derived-*`
 
 - `src/realtime_log_reader.py`
-  - 实时 tail 指定日志文件（支持文件重建/轮转）。
-  - 按 `traceId` 聚合事件并调用 `trace_analyzer.py`。
+  - 增加逐层调试输出：开文件、读到行数、解析成功/失败、跳过原因、traceId 提取结果、聚合数量
+  - 解析失败/无 traceId 行会跳过并打印 reason
+  - 输出结果附带 `status=ok|error|timeout`
 
 - `backend/ws_bridge.py`
-  - 启动 WebSocket 服务。
-  - 将 reader 结果实时推送为 `snapshot` / `trace_update`。
-  - 额外携带 `meta.logFile`，前端显示当前接入的是哪条日志路径。
+  - 增加调试输出：服务启动、收到 reader 数据、广播准备数量、广播成功/失败
+  - ws payload 带 `meta.logFile`
 
 - `web/src/App.jsx`
-  - 连接 WebSocket，自动重连。
-  - 显示最近消息列表、链路图、每段耗时、最慢红色高亮、占比、原因提示。
-  - 显示连接状态和 source log file（便于本机验收）。
+  - 增加调试输出：ws connect/open/close/error、payload、state 更新
+  - 自动选中最新 trace
+  - 列表和详情显示 `status`，缺失阶段标记 `missing`，timeout/error 高亮
 
-## 你本机需要提供的内容
+## 真实日志字段规则（当前实现）
 
-请至少提供其中一项：
+1. 事件识别字段：
+- 优先：`event | name | stage | _meta.event | _meta.event_name`
+- 否则从字符串内容推断（如 `provider.first_token`、`response complete`）
 
-1. **真实日志路径**（推荐）
-   - 例如：`/tmp/openclaw/runtime.jsonl` 或 `/var/log/openclaw/runtime.jsonl`
+2. traceId 提取：
+- 优先：`traceId | trace_id | x_trace_id | x-trace-id | _meta.traceId | _meta.trace_id | headers.x-trace-id`
 
-2. **真实日志样本文件（脱敏）**
-   - 至少 20 行 JSONL
-   - 必须包含：`ts/timestamp`、`traceId(或别名)`、`event(或别名)`
+3. 无直接 traceId 时：
+- 使用 `_meta.request_id/message_id/conversation_id` 生成 `derived-<md5前16位>`
+- 若仍无可关联信息，返回 `missing` 并跳过该行
 
-## 本机最终验证命令（真实接入）
+4. 会跳过的行：
+- 非 JSON
+- JSON 不是对象
+- 无法识别事件
+- traceId 缺失且无法推导
 
-### 0) 安装依赖
+5. 跳过原因（reader debug）：
+- `invalid_json | not_dict | adapter_no_event | missing_trace_id | empty_line`
+
+## 本机验证命令（真实路径）
+
+真实路径：`/tmp/openclaw/openclaw-$(date +%F).log`
+
+### 1) 启动后端（开启 debug）
 ```bash
-pip install -r requirements.txt
-cd web && npm install && cd ..
+export OPENCLAW_TRACE_DEBUG=1
+LOG_FILE="/tmp/openclaw/openclaw-$(date +%F).log"
+python3 backend/ws_bridge.py --log-file "$LOG_FILE" --tail
 ```
 
-### 1) 启动后端（把 REAL_LOG_PATH 替换成你本机真实路径）
-```bash
-REAL_LOG_PATH=/your/real/openclaw-runtime.jsonl
-python3 backend/ws_bridge.py --log-file "$REAL_LOG_PATH" --tail
-```
-
-启动成功关键输出：
-```text
-[reader] tailing: <REAL_LOG_PATH> (from_beginning=False)
-[ws-bridge] ws://127.0.0.1:8765 -> <REAL_LOG_PATH>
-```
+期望看到：
+- `[reader] tailing: ...`
+- `[ws-bridge] ws://127.0.0.1:8765 -> ...`
+- `[ws-debug] websocket_server_started`
 
 ### 2) 启动前端
 ```bash
 cd web
+npm install
 npm run dev
 ```
 
-### 3) 打开页面后，执行实时验收
-- 在真实 OpenClaw 发一条消息；
-- 页面左侧“最近消息”新增 traceId；
-- 顶部 `source:` 显示与你启动 bridge 时一致的 `REAL_LOG_PATH`；
-- 主图最慢链路红色高亮。
+浏览器 Console 期望看到：
+- `[ui-ws] connected`
+- `[ui-ws] payload ...`
+- `[ui-state] trace_update ...`
 
-### 4) 证明 traceId 与真实日志记录一致
+### 3) 在真实 OpenClaw 发一条消息后验证
+- 左侧新增 traceId
+- 自动选中新 trace
+- 右侧详情刷新
+- 最慢边红色高亮
+- missing / timeout / error 状态可见
+
+### 4) traceId 与真实日志对齐
 ```bash
-TRACE_ID=<页面左侧新出现的traceId>
-REAL_LOG_PATH=/your/real/openclaw-runtime.jsonl
-rg "$TRACE_ID" "$REAL_LOG_PATH" | head -n 5
+TRACE_ID=<页面新出现的traceId>
+LOG_FILE="/tmp/openclaw/openclaw-$(date +%F).log"
+rg "$TRACE_ID" "$LOG_FILE" | head -n 20
 ```
-
-看到日志命中即为“页面 traceId ↔ 真实日志记录”对齐成功。

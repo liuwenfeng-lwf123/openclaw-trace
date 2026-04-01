@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""将真实 OpenClaw 运行日志适配为标准事件:
-{ts, traceId, event, module}
-"""
-
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from hashlib import md5
 from typing import Any, Dict, Optional
-
 
 EVENT_ALIASES = {
     "send_click": "dashboard.send.click",
@@ -21,6 +17,20 @@ EVENT_ALIASES = {
     "push_start": "dashboard.push.start",
     "render_done": "dashboard.render.done",
 }
+
+INFER_RULES = [
+    ("dashboard.send.click", "dashboard.send.click"),
+    ("dashboard.request.sent", "dashboard.request.sent"),
+    ("gateway.message.received", "gateway.message.received"),
+    ("gateway.processing.start", "gateway.processing.start"),
+    ("provider.request.start", "provider.request.start"),
+    ("provider.first_token", "provider.first_token"),
+    ("provider.response.complete", "provider.response.complete"),
+    ("dashboard.push.start", "dashboard.push.start"),
+    ("dashboard.render.done", "dashboard.render.done"),
+    ("first token", "provider.first_token"),
+    ("response complete", "provider.response.complete"),
+]
 
 
 def utc_now_iso() -> str:
@@ -42,39 +52,79 @@ def _as_dict(value: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def adapt_raw_event(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """把多种 OpenClaw 运行日志结构归一化为标准事件。"""
+def _infer_event(merged: Dict[str, Any]) -> Optional[str]:
+    event = merged.get("event") or merged.get("name") or merged.get("stage")
+    meta = merged.get("_meta") if isinstance(merged.get("_meta"), dict) else {}
+    if not event:
+        event = meta.get("event") or meta.get("event_name") or meta.get("stage")
 
-    merged = dict(raw)
-    message_obj = _as_dict(raw.get("message"))
-    if message_obj:
-        merged.update(message_obj)
+    if isinstance(event, str):
+        return EVENT_ALIASES.get(event, event)
 
-    ts = merged.get("ts") or merged.get("timestamp") or merged.get("time") or merged.get("@timestamp")
+    # 真实日志可能是 {"0":"...","1":"...","_meta":...,"time":"..."}
+    text_parts = []
+    for k, v in merged.items():
+        if isinstance(v, str):
+            text_parts.append(v)
+    hay = " ".join(text_parts).lower()
+    for keyword, normalized in INFER_RULES:
+        if keyword in hay:
+            return normalized
+    return None
+
+
+def _extract_trace_id(merged: Dict[str, Any]) -> str:
+    meta = merged.get("_meta") if isinstance(merged.get("_meta"), dict) else {}
 
     trace_id = (
         merged.get("traceId")
         or merged.get("trace_id")
         or merged.get("x_trace_id")
         or merged.get("x-trace-id")
+        or meta.get("traceId")
+        or meta.get("trace_id")
+        or meta.get("x_trace_id")
+        or meta.get("x-trace-id")
     )
 
     headers = merged.get("headers") if isinstance(merged.get("headers"), dict) else {}
     if not trace_id:
         trace_id = headers.get("x-trace-id") or headers.get("x_trace_id")
 
-    event = merged.get("event") or merged.get("name") or merged.get("stage")
-    if isinstance(event, str):
-        event = EVENT_ALIASES.get(event, event)
+    if trace_id:
+        return str(trace_id)
 
-    module = merged.get("module") or merged.get("service") or "unknown"
+    # 没有直接 traceId：尝试 request_id / message_id / conversation_id 生成关联ID
+    fallback_seed = (
+        str(meta.get("request_id") or "")
+        + "|"
+        + str(meta.get("message_id") or "")
+        + "|"
+        + str(meta.get("conversation_id") or "")
+    )
+    if fallback_seed != "||":
+        return "derived-" + md5(fallback_seed.encode("utf-8")).hexdigest()[:16]
 
+    return "missing"
+
+
+def adapt_raw_event(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    merged = dict(raw)
+    message_obj = _as_dict(raw.get("message"))
+    if message_obj:
+        merged.update(message_obj)
+
+    ts = merged.get("ts") or merged.get("timestamp") or merged.get("time") or merged.get("@timestamp")
+    event = _infer_event(merged)
     if not event:
         return None
 
+    trace_id = _extract_trace_id(merged)
+    module = merged.get("module") or merged.get("service") or ((merged.get("_meta") or {}).get("module") if isinstance(merged.get("_meta"), dict) else None) or "unknown"
+
     return {
         "ts": ts or utc_now_iso(),
-        "traceId": trace_id or "missing",
+        "traceId": trace_id,
         "event": event,
         "module": module,
         "raw": raw,

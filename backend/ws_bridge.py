@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""OpenClaw 实时链路 WebSocket 桥接层（MVP）"""
-
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
+import os
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Set
@@ -17,6 +16,13 @@ if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
 from realtime_log_reader import process_file  # noqa: E402
+
+DEBUG = os.getenv("OPENCLAW_TRACE_DEBUG", "1") == "1"
+
+
+def wlog(msg: str) -> None:
+    if DEBUG:
+        print(f"[ws-debug] {msg}", flush=True)
 
 
 def to_jsonable(value: Any) -> Any:
@@ -44,6 +50,8 @@ class WsBridge:
         if len(self.latest_results) > 100:
             self.latest_results.pop()
 
+        wlog(f"received_from_reader traceId={payload.get('traceId')} status={payload.get('status')} cached={len(self.latest_results)}")
+
         if self.loop is not None:
             self.loop.call_soon_threadsafe(self.queue.put_nowait, payload)
 
@@ -51,19 +59,25 @@ class WsBridge:
         while True:
             payload = await self.queue.get()
             if not self.clients:
+                wlog("no_clients_skip_broadcast")
                 continue
+
             msg = json.dumps({"type": "trace_update", "data": payload, "meta": {"logFile": self.log_file}}, ensure_ascii=False)
+            wlog(f"broadcast_prepare clients={len(self.clients)} traceId={payload.get('traceId')}")
             dead = []
             for ws in self.clients:
                 try:
                     await ws.send(msg)
-                except Exception:
+                except Exception as e:
+                    wlog(f"broadcast_failed err={e}")
                     dead.append(ws)
             for ws in dead:
                 self.clients.discard(ws)
+            wlog(f"broadcast_done success={len(self.clients)}")
 
     async def handler(self, websocket: Any) -> None:
         self.clients.add(websocket)
+        wlog(f"client_connected total={len(self.clients)}")
         snapshot = json.dumps({"type": "snapshot", "data": self.latest_results, "meta": {"logFile": self.log_file}}, ensure_ascii=False)
         await websocket.send(snapshot)
         try:
@@ -71,6 +85,7 @@ class WsBridge:
                 pass
         finally:
             self.clients.discard(websocket)
+            wlog(f"client_disconnected total={len(self.clients)}")
 
     async def run(self, host: str, port: int) -> None:
         import websockets
@@ -94,6 +109,7 @@ class WsBridge:
 
         async with websockets.serve(self.handler, host, port):
             print(f"[ws-bridge] ws://{host}:{port} -> {self.log_file}")
+            wlog("websocket_server_started")
             await asyncio.Future()
 
 
