@@ -137,6 +137,10 @@ export default function App() {
   const current = traces.find((t) => t.traceId === selectedTraceId) || traces[0] || null;
   const flow = useMemo(() => (current ? toFlow(current) : { nodes: [], edges: [] }), [current]);
 
+  useEffect(() => {
+    if (!current) console.log('[ui-state] no_current_trace_render');
+  }, [current]);
+
   return (
     <div className="layout">
       <aside className="sidebar">
@@ -155,12 +159,22 @@ export default function App() {
 
       <main className="main">
         <header className="summary">
-          <div><b>traceId:</b> {current?.traceId || '-'}</div>
-          <div><b>status:</b> {current?.status || '-'}</div>
+          <div><b>ID:</b> {current?.traceId || '-'} ({current?.group_key_type || 'unknown'})</div>
+          <div><b>status:</b> {current?.status || '-'} {current?.error_reason ? `| ${current.error_reason}` : ''}</div>
           <div><b>最慢环节:</b> {current?.slowest?.key || 'missing'}</div>
           <div><b>最慢占比:</b> {current?.slowest?.ratio_pct == null ? 'missing' : `${current.slowest.ratio_pct}%`}</div>
+          <div><b>provider/model:</b> {(current?.provider || '-') + ' / ' + (current?.model || '-')}</div>
           <div style={{ gridColumn: '1 / span 2' }}><b>原因提示:</b> {current?.slowest?.hint || 'missing'}</div>
         </header>
+
+        <div style={{ maxHeight: 120, overflow: 'auto', fontSize: 12, padding: '0 12px' }}>
+          <b>events timeline:</b>
+          <ul>
+            {(current?.event_timeline || []).map((e, i) => (
+              <li key={`${e.ts}-${i}`}>{e.ts} | {e.event} | {e.module} {e.error ? `| error=${e.error}` : ''}</li>
+            ))}
+          </ul>
+        </div>
 
         <div className="flow-wrap">
           <ReactFlow nodes={flow.nodes} edges={flow.edges} fitView>

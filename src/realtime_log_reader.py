@@ -30,17 +30,41 @@ def dlog(msg: str) -> None:
 @dataclass
 class TraceBuffer:
     trace_id: str
+    key_type: str
     events: List[Dict] = field(default_factory=list)
     seen: set = field(default_factory=set)
+    event_timeline: List[Dict] = field(default_factory=list)
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    last_error: Optional[str] = None
     last_update: float = field(default_factory=time.time)
 
     def add(self, ev: Dict) -> None:
         self.events.append({"name": ev["name"], "timestamp": ev["timestamp"]})
         self.seen.add(ev["name"])
+        self.event_timeline.append({
+            "ts": ev["timestamp"],
+            "event": ev["name"],
+            "module": ev.get("module", "unknown"),
+            "provider": ev.get("provider"),
+            "model": ev.get("model"),
+            "error": ev.get("error"),
+        })
+        if ev.get("provider"):
+            self.provider = ev["provider"]
+        if ev.get("model"):
+            self.model = ev["model"]
+        if ev.get("error"):
+            self.last_error = str(ev["error"])
         self.last_update = time.time()
 
     def ready(self) -> bool:
-        return "dashboard.render.done" in self.seen or all(e in self.seen for e in REQUIRED_EVENTS)
+        # 既支持标准 T8 完整链路，也支持真实 run 结束事件
+        return (
+            "dashboard.render.done" in self.seen
+            or "embedded_run_agent_end" in self.seen
+            or all(e in self.seen for e in REQUIRED_EVENTS)
+        )
 
 
 def parse_line(line: str) -> Tuple[Optional[Dict], Optional[str]]:
@@ -48,7 +72,6 @@ def parse_line(line: str) -> Tuple[Optional[Dict], Optional[str]]:
     if not raw_line:
         return None, "empty_line"
 
-    # 支持日志前缀 + JSON 场景，尝试截取第一个 JSON 对象
     json_part = raw_line
     if not raw_line.startswith("{"):
         pos = raw_line.find("{")
@@ -71,8 +94,13 @@ def parse_line(line: str) -> Tuple[Optional[Dict], Optional[str]]:
         "name": normalized["event"],
         "timestamp": normalized["ts"],
         "traceId": normalized["traceId"],
+        "groupKeyType": normalized.get("groupKeyType", "unknown"),
         "raw": normalized.get("raw", data),
         "module": normalized.get("module", "unknown"),
+        "provider": normalized.get("provider"),
+        "model": normalized.get("model"),
+        "error": normalized.get("error"),
+        "tags": normalized.get("tags"),
     }
 
     if event["traceId"] == "missing":
@@ -81,13 +109,28 @@ def parse_line(line: str) -> Tuple[Optional[Dict], Optional[str]]:
     return event, None
 
 
-def classify_result(result: Dict, stale_flush: bool) -> Dict:
-    status = "ok"
+def classify_status(result: Dict, stale_flush: bool, buffer: TraceBuffer) -> Tuple[str, Optional[str]]:
     if stale_flush:
-        status = "timeout"
-    elif result.get("missing"):
-        status = "error"
+        return "timeout", buffer.last_error or "stale_flush_timeout"
+
+    text = " ".join([e["event"].lower() for e in buffer.event_timeline])
+    if any(k in text for k in ["timeout", "rate limit", "http 401", "econnrefused", "recall failed"]):
+        return "error", buffer.last_error or "runtime_error_event"
+
+    if result.get("missing"):
+        return "error", buffer.last_error or "missing_required_stage"
+
+    return "ok", buffer.last_error
+
+
+def enrich_result(result: Dict, stale_flush: bool, buffer: TraceBuffer) -> Dict:
+    status, reason = classify_status(result, stale_flush, buffer)
     result["status"] = status
+    result["error_reason"] = reason
+    result["group_key_type"] = buffer.key_type
+    result["provider"] = buffer.provider
+    result["model"] = buffer.model
+    result["event_timeline"] = buffer.event_timeline
     return result
 
 
@@ -101,14 +144,21 @@ class TraceAggregator:
         if tid == "missing":
             return []
 
-        buf = self.traces.setdefault(tid, TraceBuffer(trace_id=tid))
+        buf = self.traces.get(tid)
+        if not buf:
+            buf = TraceBuffer(trace_id=tid, key_type=ev.get("groupKeyType", "unknown"))
+            self.traces[tid] = buf
         buf.add(ev)
-        dlog(f"traceId={tid} event={ev['name']} aggregated_events={len(buf.events)} open_traces={len(self.traces)}")
+
+        dlog(
+            f"accepted event={ev['name']} key_type={buf.key_type} key={tid} "
+            f"aggregated_events={len(buf.events)} open_traces={len(self.traces)}"
+        )
 
         if buf.ready():
             result = analyze({"traceId": tid, "events": buf.events})
             self.traces.pop(tid, None)
-            return [classify_result(result, stale_flush=False)]
+            return [enrich_result(result, stale_flush=False, buffer=buf)]
 
         return []
 
@@ -119,8 +169,8 @@ class TraceAggregator:
         for tid in stale:
             buf = self.traces.pop(tid)
             result = analyze({"traceId": tid, "events": buf.events})
-            results.append(classify_result(result, stale_flush=True))
-            dlog(f"traceId={tid} stale_flush timeout open_traces={len(self.traces)}")
+            results.append(enrich_result(result, stale_flush=True, buffer=buf))
+            dlog(f"stale_flush key_type={buf.key_type} key={tid} open_traces={len(self.traces)}")
         return results
 
 
@@ -161,7 +211,10 @@ def tail_events(log_path: str, from_beginning: bool = False, poll_interval: floa
             dlog(f"line_skipped reason={reason}")
             continue
 
-        dlog(f"line_parsed_ok event={ev['name']} traceId={ev['traceId']} module={ev['module']}")
+        dlog(
+            f"line_parsed_ok event={ev['name']} key_type={ev['groupKeyType']} "
+            f"key={ev['traceId']} module={ev['module']}"
+        )
         yield ev
 
 
