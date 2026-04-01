@@ -2,18 +2,44 @@
 
 OpenClaw 单条消息全链路时序追踪与延迟分析。
 
-## 最终阶段：接入真实 OpenClaw 运行日志（最小改动版）
+## 本地桌面版（MVP）
 
-### 新增/改动文件
-- `gateway/openclaw_gateway.py`：Gateway 真实埋点（T2~T6）。
-- `dashboard/src/traceInstrumentation.ts`：Dashboard 前端埋点（T0/T1/T7/T8）。
-- `src/openclaw_jsonl_logger.py`：统一 JSONL 日志输出函数。
-- `src/realtime_log_reader.py`：可直接读取 `logs/openclaw-runtime.jsonl`。
-- `src/simulate_openclaw_runtime.py`：最小可运行模拟，生成一条完整链路日志。
+已实现一个本地桌面窗口软件（Tkinter），复用现有 `trace_analyzer.py` 和 `realtime_log_reader.py`。
 
-### JSONL 统一格式
+### 桌面版能力
+- 桌面窗口实时刷新。
+- 左侧显示最近消息（trace）列表。
+- 点击某条消息查看完整链路分段。
+- 显示每段耗时（含 `missing`）。
+- 最慢环节红色高亮。
+- 显示最慢环节占比和原因提示。
 
-每条日志统一：
+### 文件路径
+- `src/desktop_app.py`：桌面应用入口与 UI。
+- `src/realtime_log_reader.py`：实时日志读取与 trace 聚合（支持回调给桌面 UI）。
+- `src/trace_analyzer.py`：链路时延分析核心。
+- `src/simulate_openclaw_runtime.py`：生成一条完整运行日志。
+
+### 启动方式
+
+```bash
+# 1) 生成模拟日志（可选）
+: > logs/openclaw-runtime.jsonl
+python3 src/simulate_openclaw_runtime.py
+
+# 2) 启动桌面软件（默认会先读取已有日志，再实时刷新）
+python3 src/desktop_app.py --log-file logs/openclaw-runtime.jsonl
+```
+
+仅监听新增日志：
+
+```bash
+python3 src/desktop_app.py --log-file logs/openclaw-runtime.jsonl --tail
+```
+
+## JSONL 日志格式
+
+统一格式：
 
 ```json
 {
@@ -24,32 +50,15 @@ OpenClaw 单条消息全链路时序追踪与延迟分析。
 }
 ```
 
-### 埋点事件映射
-
-- Dashboard：
-  - `dashboard.send.click` (T0)
-  - `dashboard.request.sent` (T1)
-  - `dashboard.push.start` (T7)
-  - `dashboard.render.done` (T8)
-- Gateway：
+## 现有埋点（MVP）
+- Gateway (`gateway/openclaw_gateway.py`)：
   - `gateway.message.received` (T2)
   - `gateway.processing.start` (T3)
   - `provider.request.start` (T4)
   - `provider.first_token` (T5)
   - `provider.response.complete` (T6)
-
-### 本地最小运行
-
-```bash
-# 1) 生成真实格式运行日志
-: > logs/openclaw-runtime.jsonl
-python3 src/simulate_openclaw_runtime.py
-
-# 2) 直接读取 OpenClaw 日志（从文件开头）
-python3 src/realtime_log_reader.py logs/openclaw-runtime.jsonl --from-beginning --idle-flush-sec 1
-```
-
-### Reader 稳健性
-- 缺 `event`：忽略该行
-- 缺 `ts`：自动补当前 UTC
-- 缺 `traceId`：不参与 trace 聚合
+- Dashboard (`dashboard/src/traceInstrumentation.ts`)：
+  - `dashboard.send.click` (T0)
+  - `dashboard.request.sent` (T1)
+  - `dashboard.push.start` (T7)
+  - `dashboard.render.done` (T8)

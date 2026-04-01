@@ -22,9 +22,12 @@ if str(CURRENT_DIR) not in sys.path:
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Callable, Dict, Generator, List, Optional
 
 from trace_analyzer import REQUIRED_EVENTS, analyze, print_report
+
+
+AnalyzeCallback = Callable[[Dict], None]
 
 
 def utc_now_iso() -> str:
@@ -76,48 +79,75 @@ def parse_line(line: str) -> Optional[Dict]:
     return normalize_event(data)
 
 
+class TraceAggregator:
+    def __init__(self, idle_flush_sec: int = 30) -> None:
+        self.idle_flush_sec = idle_flush_sec
+        self.traces: Dict[str, TraceBuffer] = {}
+
+    def ingest(self, ev: Dict) -> List[Dict]:
+        tid = ev.get("traceId", "missing")
+        if tid == "missing":
+            return []
+
+        buf = self.traces.setdefault(tid, TraceBuffer(trace_id=tid))
+        buf.add(ev)
+
+        if buf.ready():
+            result = analyze({"traceId": tid, "events": buf.events})
+            self.traces.pop(tid, None)
+            return [result]
+
+        return []
+
+    def flush_stale(self) -> List[Dict]:
+        now = time.time()
+        stale = [tid for tid, b in self.traces.items() if now - b.last_update >= self.idle_flush_sec]
+        results: List[Dict] = []
+        for tid in stale:
+            buf = self.traces.pop(tid)
+            results.append(analyze({"traceId": tid, "events": buf.events}))
+        return results
+
+
+def tail_events(log_path: str, from_beginning: bool = False, poll_interval: float = 0.5) -> Generator[Dict, None, None]:
+    with open(log_path, "r", encoding="utf-8") as f:
+        if not from_beginning:
+            f.seek(0, os.SEEK_END)
+
+        while True:
+            line = f.readline()
+            if not line:
+                time.sleep(poll_interval)
+                continue
+            ev = parse_line(line)
+            if ev is not None:
+                yield ev
+
+
 def process_file(
     log_path: str,
     idle_flush_sec: int = 30,
     poll_interval: float = 0.5,
     from_beginning: bool = False,
+    on_result: Optional[AnalyzeCallback] = None,
 ) -> None:
-    traces: Dict[str, TraceBuffer] = {}
+    aggregator = TraceAggregator(idle_flush_sec=idle_flush_sec)
+    print(f"[reader] tailing: {log_path} (from_beginning={from_beginning})", flush=True)
 
-    with open(log_path, "r", encoding="utf-8") as f:
-        if not from_beginning:
-            f.seek(0, os.SEEK_END)
-        print(f"[reader] tailing: {log_path} (from_beginning={from_beginning})", flush=True)
-
-        while True:
-            line = f.readline()
-            if not line:
-                now = time.time()
-                stale = [tid for tid, b in traces.items() if now - b.last_update >= idle_flush_sec]
-                for tid in stale:
-                    buf = traces.pop(tid)
-                    result = analyze({"traceId": tid, "events": buf.events})
-                    print("\n[reader] idle flush", flush=True)
-                    print_report(result)
-                time.sleep(poll_interval)
-                continue
-
-            ev = parse_line(line)
-            if ev is None:
-                continue
-
-            tid = ev["traceId"]
-            if tid == "missing":
-                continue
-
-            buf = traces.setdefault(tid, TraceBuffer(trace_id=tid))
-            buf.add(ev)
-
-            if buf.ready():
-                result = analyze({"traceId": tid, "events": buf.events})
+    for ev in tail_events(log_path, from_beginning=from_beginning, poll_interval=poll_interval):
+        for result in aggregator.ingest(ev):
+            if on_result:
+                on_result(result)
+            else:
                 print("\n[reader] trace complete", flush=True)
                 print_report(result)
-                traces.pop(tid, None)
+
+        for result in aggregator.flush_stale():
+            if on_result:
+                on_result(result)
+            else:
+                print("\n[reader] idle flush", flush=True)
+                print_report(result)
 
 
 def main() -> None:
