@@ -1,0 +1,14 @@
+{
+  "traceId": "trace-2026-04-01-001",
+  "events": [
+    {"name": "dashboard.send.click", "timestamp": "2026-04-01T10:00:00.000Z"},
+    {"name": "dashboard.request.sent", "timestamp": "2026-04-01T10:00:00.028Z"},
+    {"name": "gateway.message.received", "timestamp": "2026-04-01T10:00:00.095Z"},
+    {"name": "gateway.processing.start", "timestamp": "2026-04-01T10:00:00.220Z"},
+    {"name": "provider.request.start", "timestamp": "2026-04-01T10:00:00.290Z"},
+    {"name": "provider.first_token", "timestamp": "2026-04-01T10:00:01.240Z"},
+    {"name": "provider.response.complete", "timestamp": "2026-04-01T10:00:02.760Z"},
+    {"name": "dashboard.push.start", "timestamp": "2026-04-01T10:00:02.810Z"},
+    {"name": "dashboard.render.done", "timestamp": "2026-04-01T10:00:02.920Z"}
+  ]
+}
