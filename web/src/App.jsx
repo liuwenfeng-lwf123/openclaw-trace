@@ -12,7 +12,7 @@ const SEGMENT_META = {
   'T5-T4': { from: 4, to: 5 }, 'T6-T5': { from: 5, to: 6 }, 'T7-T6': { from: 6, to: 7 }, 'T8-T7': { from: 7, to: 8 },
 };
 
-function useTraceSocket(url) {
+function useTraceSocket(url, onUpsert) {
   const [traces, setTraces] = useState([]);
   const [status, setStatus] = useState('connecting');
   const [sourceLogFile, setSourceLogFile] = useState('-');
@@ -36,16 +36,23 @@ function useTraceSocket(url) {
 
       ws.onmessage = (evt) => {
         const msg = JSON.parse(evt.data);
+        console.log('[ui-ws] payload', msg);
         if (msg.meta?.logFile) setSourceLogFile(msg.meta.logFile);
 
         if (msg.type === 'snapshot') {
           setTraces(msg.data || []);
+          console.log('[ui-state] recent list size', (msg.data || []).length);
+          return;
         }
 
         if (msg.type === 'trace_update') {
           setTraces((prev) => {
-            const filtered = prev.filter((x) => x.traceId !== msg.data?.traceId);
-            return [msg.data, ...filtered].slice(0, 100);
+            const key = msg.data?.traceId;
+            const filtered = prev.filter((x) => x.traceId !== key);
+            const next = [msg.data, ...filtered].slice(0, 100);
+            console.log('[ui-state] recent list size', next.length);
+            onUpsert?.(key);
+            return next;
           });
         }
       };
@@ -57,7 +64,7 @@ function useTraceSocket(url) {
       if (retryRef.current) clearTimeout(retryRef.current);
       if (ws) ws.close();
     };
-  }, [url]);
+  }, [url, onUpsert]);
 
   return { traces, status, sourceLogFile };
 }
@@ -81,7 +88,6 @@ function toFlow(result) {
         padding: 12,
         background: status === 'timeout' ? '#3f1d1d' : '#0f172a',
         color: 'white',
-        lineHeight: 1.4,
       },
     };
   });
@@ -97,10 +103,7 @@ function toFlow(result) {
       target: ORDER[meta.to],
       label,
       animated: isSlow,
-      style: {
-        stroke: isSlow ? '#ef4444' : isMissing ? '#f59e0b' : '#60a5fa',
-        strokeWidth: isSlow ? 3 : 2,
-      },
+      style: { stroke: isSlow ? '#ef4444' : isMissing ? '#f59e0b' : '#60a5fa', strokeWidth: isSlow ? 3 : 2 },
       labelStyle: { fill: isSlow ? '#ef4444' : isMissing ? '#f59e0b' : '#cbd5e1', fontSize: 12, fontWeight: 700 },
       labelBgStyle: { fill: '#0b1228', fillOpacity: 0.95 },
       labelBgPadding: [6, 4],
@@ -116,12 +119,14 @@ function fmt(val) {
 }
 
 export default function App() {
-  const { traces, status, sourceLogFile } = useTraceSocket('ws://127.0.0.1:8765');
   const [selectedTraceId, setSelectedTraceId] = useState(null);
+  const { traces, status, sourceLogFile } = useTraceSocket('ws://127.0.0.1:8765', (id) => {
+    if (id) setSelectedTraceId(id);
+  });
 
   useEffect(() => {
-    if (traces.length > 0) setSelectedTraceId(traces[0].traceId);
-  }, [traces]);
+    if (selectedTraceId) console.log('[ui-state] selected trace id', selectedTraceId);
+  }, [selectedTraceId]);
 
   const current = traces.find((t) => t.traceId === selectedTraceId) || traces[0] || null;
   const flow = useMemo(() => (current ? toFlow(current) : { nodes: [], edges: [] }), [current]);
@@ -152,12 +157,18 @@ export default function App() {
         <header className="summary">
           <div><b>ID:</b> {current?.traceId || '-'} ({current?.group_key_type || 'unknown'})</div>
           <div><b>status:</b> {current?.status || '-'} {current?.error_reason ? `| ${current.error_reason}` : ''}</div>
-          <div><b>首 token:</b> {fmt(segMap['T5-T0']?.ms)}</div>
-          <div><b>总耗时:</b> {fmt(segMap['T8-T0']?.ms)}</div>
-          <div><b>最慢环节:</b> {current?.slowest?.key || 'missing'}</div>
-          <div><b>最慢占比:</b> {current?.slowest?.ratio_pct == null ? 'missing' : `${current.slowest.ratio_pct}%`}</div>
           <div><b>provider/model:</b> {(current?.provider || '-') + ' / ' + (current?.model || '-')}</div>
-          <div style={{ gridColumn: '1 / span 2' }}><b>原因提示:</b> {current?.slowest?.hint || 'missing'}</div>
+          {current?.partial ? (
+            <div><b>实时耗时:</b> collecting...</div>
+          ) : (
+            <>
+              <div><b>首 token:</b> {fmt(segMap['T5-T0']?.ms)}</div>
+              <div><b>总耗时:</b> {fmt(segMap['T8-T0']?.ms)}</div>
+              <div><b>最慢环节:</b> {current?.slowest?.key || 'missing'}</div>
+              <div><b>最慢占比:</b> {current?.slowest?.ratio_pct == null ? 'missing' : `${current.slowest.ratio_pct}%`}</div>
+              <div style={{ gridColumn: '1 / span 2' }}><b>原因提示:</b> {current?.slowest?.hint || 'missing'}</div>
+            </>
+          )}
         </header>
 
         <div style={{ maxHeight: 150, overflow: 'auto', fontSize: 12, padding: '0 12px' }}>
@@ -169,22 +180,8 @@ export default function App() {
           </ul>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(140px,1fr))', gap: 6, padding: '4px 12px 8px' }}>
-          {Object.keys(SEGMENT_META).map((k) => (
-            <div key={k} style={{ fontSize: 12, padding: 6, border: '1px solid #334155', borderRadius: 6 }}>
-              <b>{k}</b>: {fmt(segMap[k]?.ms)}
-            </div>
-          ))}
-        </div>
-
         <div className="flow-wrap">
-          <ReactFlow
-            nodes={flow.nodes}
-            edges={flow.edges}
-            fitView
-            fitViewOptions={{ padding: 0.25, minZoom: 0.4, maxZoom: 1.2 }}
-            defaultViewport={{ x: 0, y: 0, zoom: 0.58 }}
-          >
+          <ReactFlow nodes={flow.nodes} edges={flow.edges} fitView fitViewOptions={{ padding: 0.25 }}>
             <MiniMap />
             <Controls />
             <Background />

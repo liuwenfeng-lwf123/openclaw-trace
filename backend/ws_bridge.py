@@ -73,7 +73,7 @@ class WsBridge:
                     dead.append(ws)
             for ws in dead:
                 self.clients.discard(ws)
-            wlog(f"broadcast_done success={len(self.clients)}")
+            wlog(f"broadcast_sent clients={len(self.clients)} traceId={payload.get('traceId')}")
 
     async def handler(self, websocket: Any) -> None:
         self.clients.add(websocket)

@@ -128,6 +128,8 @@ def classify_status(result: Dict, stale_flush: bool, buffer: TraceBuffer) -> Tup
 
 def enrich_result(result: Dict, stale_flush: bool, buffer: TraceBuffer, partial: bool = False) -> Dict:
     status, reason = classify_status(result, stale_flush, buffer)
+    if partial and not stale_flush:
+        status = "partial"
     result["status"] = status
     result["error_reason"] = reason
     result["group_key_type"] = buffer.key_type
@@ -155,7 +157,7 @@ class TraceAggregator:
         buf.add(ev)
 
         dlog(
-            f"accepted event={ev['name']} key_type={buf.key_type} key={tid} "
+            f"accepted_event event={ev['name']} key_type={buf.key_type} key={tid} "
             f"aggregated_events={len(buf.events)} open_traces={len(self.traces)}"
         )
 
