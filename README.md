@@ -69,3 +69,22 @@ npm run dev
 ID=<页面新出现ID>
 rg "$ID" "/tmp/openclaw/openclaw-$(date +%F).log" | head -n 20
 ```
+
+## 排障（你现在这个“页面无新增”场景）
+
+若页面 `WS: connected` 但列表仍空：
+
+1. 先看后端是否持续出现：
+- `[reader-debug] tail_idle waiting_new_line ...`
+- 如果只有 idle，没有 `line_read_count`，说明当前监听文件没有新增行。
+
+2. 当前 reader 会自动切换到同目录最新 `openclaw-*.log`，启动时会打印：
+- `[reader-debug] log_target_switched old=... new=...`
+
+3. 若仍无 `line_parsed_ok`：
+- 看是否一直 `line_skipped reason=...`
+- 贴出前 5 条 skipped 原因即可继续定位。
+
+4. 若有 `line_parsed_ok` 但页面不更新：
+- 看 `ws-debug` 是否有 `broadcast_prepare` / `broadcast_done`
+- 看浏览器 console 是否有 `[ui-ws] payload` 与 `[ui-state] trace_update`

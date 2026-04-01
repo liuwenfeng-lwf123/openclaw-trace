@@ -147,6 +147,7 @@ export default function App() {
         <h3>最近消息</h3>
         <div style={{ fontSize: 12, opacity: 0.9, marginBottom: 8 }}>WS: {status}</div>
         <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 12 }}>source: {sourceLogFile}</div>
+        {traces.length === 0 && <div style={{fontSize:12,opacity:0.8}}>暂无记录，检查 reader-debug 是否出现 line_parsed_ok</div>}
         {traces.map((t, idx) => (
           <button key={`${t.traceId}-${idx}`} onClick={() => setSelectedTraceId(t.traceId)} className="trace-item">
             <div>{t.traceId}</div>

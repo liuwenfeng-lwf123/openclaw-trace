@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import glob
 import os
 import sys
 import time
@@ -174,26 +175,52 @@ class TraceAggregator:
         return results
 
 
+def _select_log_target(config_path: str, current: Optional[Path]) -> Optional[Path]:
+    # explicit glob support
+    if "*" in config_path:
+        matches = sorted([Path(x) for x in glob.glob(config_path)], key=lambda x: x.stat().st_mtime, reverse=True)
+        return matches[0] if matches else None
+
+    p = Path(config_path)
+    if p.exists():
+        # if sibling daily file newer, switch to newer file
+        siblings = sorted(p.parent.glob("openclaw-*.log"), key=lambda x: x.stat().st_mtime, reverse=True)
+        if siblings and siblings[0].stat().st_mtime > p.stat().st_mtime:
+            return siblings[0]
+        return p
+
+    # fallback: try newest openclaw daily log in same dir
+    siblings = sorted(p.parent.glob("openclaw-*.log"), key=lambda x: x.stat().st_mtime, reverse=True)
+    return siblings[0] if siblings else None
+
+
 def tail_events(log_path: str, from_beginning: bool = False, poll_interval: float = 0.5) -> Generator[Dict, None, None]:
     fp = None
     inode = None
     offset_to_end = not from_beginning
     read_count = 0
+    target_path: Optional[Path] = None
+    last_idle_log = 0.0
 
     while True:
-        path = Path(log_path)
-        if not path.exists():
+        selected = _select_log_target(log_path, target_path)
+        if selected is None:
             dlog(f"waiting_log_file path={log_path}")
             time.sleep(poll_interval)
             continue
 
-        stat = path.stat()
+        if target_path is None or selected != target_path:
+            dlog(f"log_target_switched old={target_path} new={selected}")
+            target_path = selected
+            inode = None
+
+        stat = target_path.stat()
         if fp is None or inode != stat.st_ino:
             if fp is not None:
                 fp.close()
-            fp = open(log_path, "r", encoding="utf-8")
+            fp = open(target_path, "r", encoding="utf-8")
             inode = stat.st_ino
-            dlog(f"opened_log_file path={log_path} inode={inode}")
+            dlog(f"opened_log_file path={target_path} inode={inode}")
             if offset_to_end:
                 fp.seek(0, os.SEEK_END)
                 offset_to_end = False
@@ -201,11 +228,15 @@ def tail_events(log_path: str, from_beginning: bool = False, poll_interval: floa
 
         line = fp.readline()
         if not line:
+            now = time.time()
+            if now - last_idle_log > 5:
+                dlog(f"tail_idle waiting_new_line file={target_path}")
+                last_idle_log = now
             time.sleep(poll_interval)
             continue
 
         read_count += 1
-        dlog(f"line_read_count={read_count} bytes={len(line)}")
+        dlog(f"line_read_count={read_count} bytes={len(line)} file={target_path.name}")
         ev, reason = parse_line(line)
         if ev is None:
             dlog(f"line_skipped reason={reason}")
