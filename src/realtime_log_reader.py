@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-"""实时日志读取器（MVP）
-
-- 持续 tail JSONL 日志
-- 按 traceId 聚合事件
-- 调用 trace_analyzer.analyze 输出结果
-- 缺字段稳健处理，不崩溃
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -21,33 +13,12 @@ if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Callable, Dict, Generator, List, Optional
 
+from openclaw_event_adapter import adapt_raw_event
 from trace_analyzer import REQUIRED_EVENTS, analyze, print_report
 
-
 AnalyzeCallback = Callable[[Dict], None]
-
-
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def normalize_event(raw: Dict) -> Optional[Dict]:
-    ts = raw.get("ts") or raw.get("timestamp")
-    event = raw.get("event") or raw.get("name")
-    trace_id = raw.get("traceId")
-
-    if not event:
-        return None
-
-    return {
-        "name": event,
-        "timestamp": ts or utc_now_iso(),
-        "traceId": trace_id or "missing",
-        "raw": raw,
-    }
 
 
 @dataclass
@@ -70,13 +41,26 @@ def parse_line(line: str) -> Optional[Dict]:
     line = line.strip()
     if not line:
         return None
+
     try:
         data = json.loads(line)
     except json.JSONDecodeError:
         return None
+
     if not isinstance(data, dict):
         return None
-    return normalize_event(data)
+
+    normalized = adapt_raw_event(data)
+    if not normalized:
+        return None
+
+    return {
+        "name": normalized["event"],
+        "timestamp": normalized["ts"],
+        "traceId": normalized["traceId"],
+        "raw": normalized.get("raw", data),
+        "module": normalized.get("module", "unknown"),
+    }
 
 
 class TraceAggregator:
@@ -110,7 +94,6 @@ class TraceAggregator:
 
 
 def tail_events(log_path: str, from_beginning: bool = False, poll_interval: float = 0.5) -> Generator[Dict, None, None]:
-    """Tail a JSONL file and survive file rotation/recreate."""
     fp = None
     inode = None
     offset_to_end = not from_beginning

@@ -52,7 +52,7 @@ class WsBridge:
             payload = await self.queue.get()
             if not self.clients:
                 continue
-            msg = json.dumps({"type": "trace_update", "data": payload}, ensure_ascii=False)
+            msg = json.dumps({"type": "trace_update", "data": payload, "meta": {"logFile": self.log_file}}, ensure_ascii=False)
             dead = []
             for ws in self.clients:
                 try:
@@ -64,7 +64,7 @@ class WsBridge:
 
     async def handler(self, websocket: Any) -> None:
         self.clients.add(websocket)
-        snapshot = json.dumps({"type": "snapshot", "data": self.latest_results}, ensure_ascii=False)
+        snapshot = json.dumps({"type": "snapshot", "data": self.latest_results, "meta": {"logFile": self.log_file}}, ensure_ascii=False)
         await websocket.send(snapshot)
         try:
             async for _ in websocket:

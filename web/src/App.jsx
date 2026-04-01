@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Background, Controls, MiniMap, ReactFlow } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
@@ -27,29 +27,54 @@ const SEGMENT_META = {
 
 function useTraceSocket(url) {
   const [traces, setTraces] = useState([]);
+  const [status, setStatus] = useState('connecting');
+  const [sourceLogFile, setSourceLogFile] = useState('-');
+  const retryRef = useRef(null);
 
   useEffect(() => {
-    const ws = new WebSocket(url);
+    let ws;
+    let closedByUser = false;
 
-    ws.onmessage = (evt) => {
-      const msg = JSON.parse(evt.data);
-      if (msg.type === 'snapshot') {
-        setTraces(msg.data || []);
-      }
-      if (msg.type === 'trace_update') {
-        setTraces((prev) => [msg.data, ...prev].slice(0, 100));
-      }
+    const connect = () => {
+      setStatus('connecting');
+      ws = new WebSocket(url);
+
+      ws.onopen = () => setStatus('connected');
+      ws.onclose = () => {
+        if (closedByUser) return;
+        setStatus('reconnecting');
+        retryRef.current = setTimeout(connect, 1200);
+      };
+      ws.onerror = () => setStatus('error');
+
+      ws.onmessage = (evt) => {
+        const msg = JSON.parse(evt.data);
+        if (msg.meta?.logFile) {
+          setSourceLogFile(msg.meta.logFile);
+        }
+        if (msg.type === 'snapshot') {
+          setTraces(msg.data || []);
+        }
+        if (msg.type === 'trace_update') {
+          setTraces((prev) => [msg.data, ...prev].slice(0, 100));
+        }
+      };
     };
 
-    return () => ws.close();
+    connect();
+
+    return () => {
+      closedByUser = true;
+      if (retryRef.current) clearTimeout(retryRef.current);
+      if (ws) ws.close();
+    };
   }, [url]);
 
-  return traces;
+  return { traces, status, sourceLogFile };
 }
 
 function toFlow(result) {
   const slowest = result.slowest?.key;
-
   const nodes = ORDER.map((event, idx) => ({
     id: event,
     position: { x: 70 + idx * 220, y: 140 },
@@ -66,7 +91,6 @@ function toFlow(result) {
   }));
 
   const segMap = Object.fromEntries((result.segments || []).map((s) => [s.key, s]));
-
   const edges = Object.entries(SEGMENT_META).map(([key, meta]) => {
     const seg = segMap[key];
     const isSlow = key === slowest;
@@ -86,7 +110,7 @@ function toFlow(result) {
 }
 
 export default function App() {
-  const traces = useTraceSocket('ws://127.0.0.1:8765');
+  const { traces, status, sourceLogFile } = useTraceSocket('ws://127.0.0.1:8765');
   const [selected, setSelected] = useState(null);
 
   useEffect(() => {
@@ -102,8 +126,10 @@ export default function App() {
     <div className="layout">
       <aside className="sidebar">
         <h3>最近消息</h3>
-        {traces.map((t) => (
-          <button key={t.traceId + (t.slowest?.key || '')} onClick={() => setSelected(t)} className="trace-item">
+        <div style={{ fontSize: 12, opacity: 0.9, marginBottom: 8 }}>WS: {status}</div>
+        <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 12 }}>source: {sourceLogFile}</div>
+        {traces.map((t, idx) => (
+          <button key={`${t.traceId}-${idx}`} onClick={() => setSelected(t)} className="trace-item">
             <div>{t.traceId}</div>
             <small>T8-T0: {(t.segments?.find((s) => s.key === 'T8-T0')?.ms ?? 'missing')}</small>
           </button>
