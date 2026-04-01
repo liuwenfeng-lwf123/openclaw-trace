@@ -23,51 +23,35 @@ function useTraceSocket(url) {
     let closedByUser = false;
 
     const connect = () => {
-      console.log('[ui-ws] connecting', { url });
       setStatus('connecting');
       ws = new WebSocket(url);
 
-      ws.onopen = () => {
-        console.log('[ui-ws] connected');
-        setStatus('connected');
-      };
-
-      ws.onclose = (evt) => {
-        console.log('[ui-ws] closed', { code: evt.code, reason: evt.reason });
+      ws.onopen = () => setStatus('connected');
+      ws.onclose = () => {
         if (closedByUser) return;
         setStatus('reconnecting');
         retryRef.current = setTimeout(connect, 1200);
       };
-
-      ws.onerror = (err) => {
-        console.log('[ui-ws] error', err);
-        setStatus('error');
-      };
+      ws.onerror = () => setStatus('error');
 
       ws.onmessage = (evt) => {
         const msg = JSON.parse(evt.data);
-        console.log('[ui-ws] payload', msg);
-
         if (msg.meta?.logFile) setSourceLogFile(msg.meta.logFile);
 
         if (msg.type === 'snapshot') {
           setTraces(msg.data || []);
-          console.log('[ui-state] snapshot_update', { count: (msg.data || []).length });
         }
 
         if (msg.type === 'trace_update') {
           setTraces((prev) => {
             const filtered = prev.filter((x) => x.traceId !== msg.data?.traceId);
-            const next = [msg.data, ...filtered].slice(0, 100);
-            console.log('[ui-state] trace_update', { traceId: msg.data?.traceId, count: next.length, partial: msg.data?.partial });
-            return next;
+            return [msg.data, ...filtered].slice(0, 100);
           });
         }
       };
     };
 
     connect();
-
     return () => {
       closedByUser = true;
       if (retryRef.current) clearTimeout(retryRef.current);
@@ -81,31 +65,32 @@ function useTraceSocket(url) {
 function toFlow(result) {
   const slowest = result.slowest?.key;
   const status = result.status || 'ok';
+  const segMap = Object.fromEntries((result.segments || []).map((s) => [s.key, s]));
 
   const nodes = ORDER.map((event, idx) => {
     const missing = (result.missing || []).some((m) => m.includes(event));
     return {
       id: event,
-      position: { x: 70 + idx * 220, y: 140 },
+      position: { x: 90 + idx * 300, y: 110 + (idx % 2) * 120 },
       data: { label: `${event}${missing ? ' (missing)' : ''}` },
       style: {
-        border: `1px solid ${missing ? '#f59e0b' : '#666'}`,
-        borderRadius: 10,
-        width: 190,
+        border: `1px solid ${missing ? '#f59e0b' : '#4b5563'}`,
+        borderRadius: 12,
+        width: 240,
         fontSize: 12,
-        padding: 10,
-        background: status === 'timeout' ? '#3f1d1d' : '#111827',
+        padding: 12,
+        background: status === 'timeout' ? '#3f1d1d' : '#0f172a',
         color: 'white',
+        lineHeight: 1.4,
       },
     };
   });
 
-  const segMap = Object.fromEntries((result.segments || []).map((s) => [s.key, s]));
   const edges = Object.entries(SEGMENT_META).map(([key, meta]) => {
     const seg = segMap[key];
     const isSlow = key === slowest;
     const isMissing = seg?.ms == null;
-    const label = `${key}: ${isMissing ? 'missing' : `${seg.ms.toFixed(2)} ms`}`;
+    const label = `${key}  ${isMissing ? 'missing' : `${seg.ms.toFixed(2)} ms`}`;
     return {
       id: key,
       source: ORDER[meta.from],
@@ -116,30 +101,34 @@ function toFlow(result) {
         stroke: isSlow ? '#ef4444' : isMissing ? '#f59e0b' : '#60a5fa',
         strokeWidth: isSlow ? 3 : 2,
       },
-      labelStyle: { fill: isSlow ? '#ef4444' : isMissing ? '#f59e0b' : '#93c5fd', fontSize: 12, fontWeight: 700 },
+      labelStyle: { fill: isSlow ? '#ef4444' : isMissing ? '#f59e0b' : '#cbd5e1', fontSize: 12, fontWeight: 700 },
+      labelBgStyle: { fill: '#0b1228', fillOpacity: 0.95 },
+      labelBgPadding: [6, 4],
+      labelBgBorderRadius: 6,
     };
   });
 
   return { nodes, edges };
 }
 
+function fmt(val) {
+  return val == null ? 'missing' : `${val.toFixed(2)} ms`;
+}
+
 export default function App() {
   const { traces, status, sourceLogFile } = useTraceSocket('ws://127.0.0.1:8765');
   const [selectedTraceId, setSelectedTraceId] = useState(null);
 
-  // 默认自动选中最新消息
   useEffect(() => {
-    if (traces.length > 0) {
-      setSelectedTraceId(traces[0].traceId);
-      console.log('[ui-state] auto_select_latest', traces[0].traceId);
-    }
+    if (traces.length > 0) setSelectedTraceId(traces[0].traceId);
   }, [traces]);
 
   const current = traces.find((t) => t.traceId === selectedTraceId) || traces[0] || null;
   const flow = useMemo(() => (current ? toFlow(current) : { nodes: [], edges: [] }), [current]);
 
-  useEffect(() => {
-    if (!current) console.log('[ui-state] no_current_trace_render');
+  const segMap = useMemo(() => {
+    if (!current?.segments) return {};
+    return Object.fromEntries(current.segments.map((s) => [s.key, s]));
   }, [current]);
 
   return (
@@ -148,7 +137,7 @@ export default function App() {
         <h3>最近消息</h3>
         <div style={{ fontSize: 12, opacity: 0.9, marginBottom: 8 }}>WS: {status}</div>
         <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 12 }}>source: {sourceLogFile}</div>
-        {traces.length === 0 && <div style={{fontSize:12,opacity:0.8}}>暂无记录，检查 reader-debug 是否出现 line_parsed_ok</div>}
+        {traces.length === 0 && <div style={{fontSize:12,opacity:0.8}}>暂无记录，检查 reader-debug 的 line_parsed_ok</div>}
         {traces.map((t, idx) => (
           <button key={`${t.traceId}-${idx}`} onClick={() => setSelectedTraceId(t.traceId)} className="trace-item">
             <div>{t.traceId}</div>
@@ -163,13 +152,15 @@ export default function App() {
         <header className="summary">
           <div><b>ID:</b> {current?.traceId || '-'} ({current?.group_key_type || 'unknown'})</div>
           <div><b>status:</b> {current?.status || '-'} {current?.error_reason ? `| ${current.error_reason}` : ''}</div>
+          <div><b>首 token:</b> {fmt(segMap['T5-T0']?.ms)}</div>
+          <div><b>总耗时:</b> {fmt(segMap['T8-T0']?.ms)}</div>
           <div><b>最慢环节:</b> {current?.slowest?.key || 'missing'}</div>
           <div><b>最慢占比:</b> {current?.slowest?.ratio_pct == null ? 'missing' : `${current.slowest.ratio_pct}%`}</div>
           <div><b>provider/model:</b> {(current?.provider || '-') + ' / ' + (current?.model || '-')}</div>
           <div style={{ gridColumn: '1 / span 2' }}><b>原因提示:</b> {current?.slowest?.hint || 'missing'}</div>
         </header>
 
-        <div style={{ maxHeight: 120, overflow: 'auto', fontSize: 12, padding: '0 12px' }}>
+        <div style={{ maxHeight: 150, overflow: 'auto', fontSize: 12, padding: '0 12px' }}>
           <b>events timeline:</b>
           <ul>
             {(current?.event_timeline || []).map((e, i) => (
@@ -178,8 +169,22 @@ export default function App() {
           </ul>
         </div>
 
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(140px,1fr))', gap: 6, padding: '4px 12px 8px' }}>
+          {Object.keys(SEGMENT_META).map((k) => (
+            <div key={k} style={{ fontSize: 12, padding: 6, border: '1px solid #334155', borderRadius: 6 }}>
+              <b>{k}</b>: {fmt(segMap[k]?.ms)}
+            </div>
+          ))}
+        </div>
+
         <div className="flow-wrap">
-          <ReactFlow nodes={flow.nodes} edges={flow.edges} fitView>
+          <ReactFlow
+            nodes={flow.nodes}
+            edges={flow.edges}
+            fitView
+            fitViewOptions={{ padding: 0.25, minZoom: 0.4, maxZoom: 1.2 }}
+            defaultViewport={{ x: 0, y: 0, zoom: 0.58 }}
+          >
             <MiniMap />
             <Controls />
             <Background />
