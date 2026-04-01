@@ -110,18 +110,35 @@ class TraceAggregator:
 
 
 def tail_events(log_path: str, from_beginning: bool = False, poll_interval: float = 0.5) -> Generator[Dict, None, None]:
-    with open(log_path, "r", encoding="utf-8") as f:
-        if not from_beginning:
-            f.seek(0, os.SEEK_END)
+    """Tail a JSONL file and survive file rotation/recreate."""
+    fp = None
+    inode = None
+    offset_to_end = not from_beginning
 
-        while True:
-            line = f.readline()
-            if not line:
-                time.sleep(poll_interval)
-                continue
-            ev = parse_line(line)
-            if ev is not None:
-                yield ev
+    while True:
+        path = Path(log_path)
+        if not path.exists():
+            time.sleep(poll_interval)
+            continue
+
+        stat = path.stat()
+        if fp is None or inode != stat.st_ino:
+            if fp is not None:
+                fp.close()
+            fp = open(log_path, "r", encoding="utf-8")
+            inode = stat.st_ino
+            if offset_to_end:
+                fp.seek(0, os.SEEK_END)
+                offset_to_end = False
+
+        line = fp.readline()
+        if not line:
+            time.sleep(poll_interval)
+            continue
+
+        ev = parse_line(line)
+        if ev is not None:
+            yield ev
 
 
 def process_file(
