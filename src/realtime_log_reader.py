@@ -76,12 +76,18 @@ def parse_line(line: str) -> Optional[Dict]:
     return normalize_event(data)
 
 
-def process_file(log_path: str, idle_flush_sec: int = 30, poll_interval: float = 0.5) -> None:
+def process_file(
+    log_path: str,
+    idle_flush_sec: int = 30,
+    poll_interval: float = 0.5,
+    from_beginning: bool = False,
+) -> None:
     traces: Dict[str, TraceBuffer] = {}
 
     with open(log_path, "r", encoding="utf-8") as f:
-        f.seek(0, os.SEEK_END)
-        print(f"[reader] tailing: {log_path}", flush=True)
+        if not from_beginning:
+            f.seek(0, os.SEEK_END)
+        print(f"[reader] tailing: {log_path} (from_beginning={from_beginning})", flush=True)
 
         while True:
             line = f.readline()
@@ -117,12 +123,18 @@ def process_file(log_path: str, idle_flush_sec: int = 30, poll_interval: float =
 def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)
     parser = argparse.ArgumentParser(description="Tail OpenClaw JSONL logs and analyze traces")
-    parser.add_argument("log_file", help="Path to JSONL log file")
+    parser.add_argument("log_file", nargs="?", default="logs/openclaw-runtime.jsonl", help="Path to JSONL log file")
     parser.add_argument("--idle-flush-sec", type=int, default=30, help="Flush inactive trace buffers")
     parser.add_argument("--poll-interval", type=float, default=0.5, help="File tail poll interval")
+    parser.add_argument("--from-beginning", action="store_true", help="Read existing log lines from file start")
     args = parser.parse_args()
 
-    process_file(args.log_file, idle_flush_sec=args.idle_flush_sec, poll_interval=args.poll_interval)
+    process_file(
+        args.log_file,
+        idle_flush_sec=args.idle_flush_sec,
+        poll_interval=args.poll_interval,
+        from_beginning=args.from_beginning,
+    )
 
 
 if __name__ == "__main__":
