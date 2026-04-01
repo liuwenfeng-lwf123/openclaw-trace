@@ -1,0 +1,9 @@
+* { box-sizing: border-box; }
+body, html, #root { margin: 0; padding: 0; width: 100%; height: 100%; font-family: Inter, Arial, sans-serif; }
+.layout { display: flex; height: 100%; background: #0b1020; color: #e5e7eb; }
+.sidebar { width: 320px; border-right: 1px solid #1f2937; padding: 12px; overflow-y: auto; }
+.trace-item { width: 100%; text-align: left; margin-bottom: 8px; padding: 10px; border-radius: 8px; border: 1px solid #334155; background: #111827; color: #e5e7eb; cursor: pointer; }
+.trace-item:hover { border-color: #60a5fa; }
+.main { flex: 1; display: flex; flex-direction: column; }
+.summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; border-bottom: 1px solid #1f2937; background: #111827; }
+.flow-wrap { flex: 1; }

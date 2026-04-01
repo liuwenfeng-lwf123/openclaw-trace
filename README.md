@@ -2,44 +2,32 @@
 
 OpenClaw 单条消息全链路时序追踪与延迟分析。
 
-## 本地桌面版（MVP）
+## 实时可视化（React Flow + WebSocket）
 
-已实现一个本地桌面窗口软件（Tkinter），复用现有 `trace_analyzer.py` 和 `realtime_log_reader.py`。
+已废弃 Tkinter UI，当前采用：
+- Python 分析层（保留并复用）
+- Python WebSocket 桥接层
+- React + React Flow 链路图前端
 
-### 桌面版能力
-- 桌面窗口实时刷新。
-- 左侧显示最近消息（trace）列表。
-- 点击某条消息查看完整链路分段。
-- 显示每段耗时（含 `missing`）。
-- 最慢环节红色高亮。
-- 显示最慢环节占比和原因提示。
+### 目录结构
+- `src/trace_analyzer.py`：链路分析核心（复用）。
+- `src/realtime_log_reader.py`：实时日志读取与按 traceId 聚合（复用/增强）。
+- `backend/ws_bridge.py`：读取 OpenClaw 运行日志并通过 WebSocket 推送分析结果。
+- `web/`：React Flow 前端可视化。
 
-### 文件路径
-- `src/desktop_app.py`：桌面应用入口与 UI。
-- `src/realtime_log_reader.py`：实时日志读取与 trace 聚合（支持回调给桌面 UI）。
-- `src/trace_analyzer.py`：链路时延分析核心。
-- `src/simulate_openclaw_runtime.py`：生成一条完整运行日志。
+### 前端能力
+- 最近消息列表
+- 单条消息完整链路图（调用链样式）
+- 每段耗时标签
+- 最慢环节红色高亮
+- 最慢环节占比
+- 原因提示
+- WebSocket 实时自动刷新
 
-### 启动方式
+### 真实事件流接入
+OpenClaw 运行时日志（JSONL） -> `src/realtime_log_reader.py` -> `backend/ws_bridge.py` -> WebSocket -> React Flow 前端。
 
-```bash
-# 1) 生成模拟日志（可选）
-: > logs/openclaw-runtime.jsonl
-python3 src/simulate_openclaw_runtime.py
-
-# 2) 启动桌面软件（默认会先读取已有日志，再实时刷新）
-python3 src/desktop_app.py --log-file logs/openclaw-runtime.jsonl
-```
-
-仅监听新增日志：
-
-```bash
-python3 src/desktop_app.py --log-file logs/openclaw-runtime.jsonl --tail
-```
-
-## JSONL 日志格式
-
-统一格式：
+日志格式：
 
 ```json
 {
@@ -50,15 +38,26 @@ python3 src/desktop_app.py --log-file logs/openclaw-runtime.jsonl --tail
 }
 ```
 
-## 现有埋点（MVP）
-- Gateway (`gateway/openclaw_gateway.py`)：
-  - `gateway.message.received` (T2)
-  - `gateway.processing.start` (T3)
-  - `provider.request.start` (T4)
-  - `provider.first_token` (T5)
-  - `provider.response.complete` (T6)
-- Dashboard (`dashboard/src/traceInstrumentation.ts`)：
-  - `dashboard.send.click` (T0)
-  - `dashboard.request.sent` (T1)
-  - `dashboard.push.start` (T7)
-  - `dashboard.render.done` (T8)
+### 本地最小可运行
+
+1) 启动桥接层（监听真实运行日志）
+
+```bash
+python3 backend/ws_bridge.py --log-file logs/openclaw-runtime.jsonl
+```
+
+2) 启动前端
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+3) 模拟写入一条真实链路日志（可选）
+
+```bash
+python3 src/simulate_openclaw_runtime.py
+```
+
+打开 Vite 输出地址（通常 `http://127.0.0.1:5173`）即可实时看到更新。
