@@ -12,27 +12,62 @@ const SEGMENT_META = {
   'T5-T4': { from: 4, to: 5 }, 'T6-T5': { from: 5, to: 6 }, 'T7-T6': { from: 6, to: 7 }, 'T8-T7': { from: 7, to: 8 },
 };
 
-function useTraceSocket(url, onUpsert) {
+function buildWsCandidates() {
+  const host = window.location.hostname || '127.0.0.1';
+  const param = new URLSearchParams(window.location.search).get('ws');
+  const list = [];
+  if (param) list.push(param);
+  list.push(`ws://${host}:8765`, 'ws://127.0.0.1:8765', 'ws://localhost:8765');
+  return Array.from(new Set(list));
+}
+
+function useTraceSocket(onUpsert) {
   const [traces, setTraces] = useState([]);
   const [status, setStatus] = useState('connecting');
   const [sourceLogFile, setSourceLogFile] = useState('-');
+  const [activeWsUrl, setActiveWsUrl] = useState('-');
   const retryRef = useRef(null);
 
   useEffect(() => {
     let ws;
     let closedByUser = false;
+    const candidates = buildWsCandidates();
 
-    const connect = () => {
+    const connect = (idx = 0) => {
+      if (idx >= candidates.length) {
+        setStatus('error');
+        retryRef.current = setTimeout(() => connect(0), 1500);
+        return;
+      }
+
+      const url = candidates[idx];
       setStatus('connecting');
+      setActiveWsUrl(url);
       ws = new WebSocket(url);
 
-      ws.onopen = () => setStatus('connected');
-      ws.onclose = () => {
-        if (closedByUser) return;
-        setStatus('reconnecting');
-        retryRef.current = setTimeout(connect, 1200);
+      const fallbackTimer = setTimeout(() => {
+        if (ws && ws.readyState !== WebSocket.OPEN) {
+          try { ws.close(); } catch {}
+        }
+      }, 1200);
+
+      ws.onopen = () => {
+        clearTimeout(fallbackTimer);
+        setStatus('connected');
+        console.log('[ui-ws] connected', url);
       };
-      ws.onerror = () => setStatus('error');
+
+      ws.onclose = () => {
+        clearTimeout(fallbackTimer);
+        if (closedByUser) return;
+        console.log('[ui-ws] close, try next', url);
+        connect(idx + 1);
+      };
+
+      ws.onerror = () => {
+        clearTimeout(fallbackTimer);
+        console.log('[ui-ws] error', url);
+      };
 
       ws.onmessage = (evt) => {
         const msg = JSON.parse(evt.data);
@@ -58,15 +93,16 @@ function useTraceSocket(url, onUpsert) {
       };
     };
 
-    connect();
+    connect(0);
+
     return () => {
       closedByUser = true;
       if (retryRef.current) clearTimeout(retryRef.current);
       if (ws) ws.close();
     };
-  }, [url, onUpsert]);
+  }, [onUpsert]);
 
-  return { traces, status, sourceLogFile };
+  return { traces, status, sourceLogFile, activeWsUrl };
 }
 
 function toFlow(result) {
@@ -120,7 +156,7 @@ function fmt(val) {
 
 export default function App() {
   const [selectedTraceId, setSelectedTraceId] = useState(null);
-  const { traces, status, sourceLogFile } = useTraceSocket('ws://127.0.0.1:8765', (id) => {
+  const { traces, status, sourceLogFile, activeWsUrl } = useTraceSocket((id) => {
     if (id) setSelectedTraceId(id);
   });
 
@@ -141,8 +177,9 @@ export default function App() {
       <aside className="sidebar">
         <h3>最近消息</h3>
         <div style={{ fontSize: 12, opacity: 0.9, marginBottom: 8 }}>WS: {status}</div>
+        <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 4 }}>ws-url: {activeWsUrl}</div>
         <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 12 }}>source: {sourceLogFile}</div>
-        {traces.length === 0 && <div style={{fontSize:12,opacity:0.8}}>暂无记录，检查 reader-debug 的 line_parsed_ok</div>}
+        {traces.length === 0 && <div style={{fontSize:12,opacity:0.8}}>暂无记录：若 WS=connecting/error，请先确认 bridge 在跑</div>}
         {traces.map((t, idx) => (
           <button key={`${t.traceId}-${idx}`} onClick={() => setSelectedTraceId(t.traceId)} className="trace-item">
             <div>{t.traceId}</div>
