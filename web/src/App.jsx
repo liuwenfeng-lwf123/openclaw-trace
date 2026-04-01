@@ -57,8 +57,9 @@ function useTraceSocket(url) {
 
         if (msg.type === 'trace_update') {
           setTraces((prev) => {
-            const next = [msg.data, ...prev].slice(0, 100);
-            console.log('[ui-state] trace_update', { traceId: msg.data?.traceId, count: next.length });
+            const filtered = prev.filter((x) => x.traceId !== msg.data?.traceId);
+            const next = [msg.data, ...filtered].slice(0, 100);
+            console.log('[ui-state] trace_update', { traceId: msg.data?.traceId, count: next.length, partial: msg.data?.partial });
             return next;
           });
         }
@@ -152,7 +153,7 @@ export default function App() {
           <button key={`${t.traceId}-${idx}`} onClick={() => setSelectedTraceId(t.traceId)} className="trace-item">
             <div>{t.traceId}</div>
             <small>
-              status={t.status || 'ok'} | T8-T0: {(t.segments?.find((s) => s.key === 'T8-T0')?.ms ?? 'missing')}
+              status={t.status || 'ok'}{t.partial ? ' (partial)' : ''} | T8-T0: {(t.segments?.find((s) => s.key === 'T8-T0')?.ms ?? 'missing')}
             </small>
           </button>
         ))}

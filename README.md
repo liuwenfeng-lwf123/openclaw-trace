@@ -48,6 +48,8 @@
 
 ```bash
 export OPENCLAW_TRACE_DEBUG=1
+# 如需逐行日志再开
+export OPENCLAW_TRACE_DEBUG_VERBOSE=0
 LOG_FILE="/tmp/openclaw/openclaw-$(date +%F).log"
 python3 backend/ws_bridge.py --log-file "$LOG_FILE" --tail
 ```
@@ -88,3 +90,9 @@ rg "$ID" "/tmp/openclaw/openclaw-$(date +%F).log" | head -n 20
 4. 若有 `line_parsed_ok` 但页面不更新：
 - 看 `ws-debug` 是否有 `broadcast_prepare` / `broadcast_done`
 - 看浏览器 console 是否有 `[ui-ws] payload` 与 `[ui-state] trace_update`
+
+
+### 新增说明（解决“狂跳日志+页面无反应”）
+- reader 默认不再每行都刷屏，改为采样输出；
+- 若你要逐行看，把 `OPENCLAW_TRACE_DEBUG_VERBOSE=1`；
+- 即使链路未结束，也会每秒推送一次 partial 结果到前端，左侧应该先出现记录。

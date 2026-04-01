@@ -21,6 +21,7 @@ from trace_analyzer import REQUIRED_EVENTS, analyze, print_report
 
 AnalyzeCallback = Callable[[Dict], None]
 DEBUG = os.getenv("OPENCLAW_TRACE_DEBUG", "1") == "1"
+VERBOSE = os.getenv("OPENCLAW_TRACE_DEBUG_VERBOSE", "0") == "1"
 
 
 def dlog(msg: str) -> None:
@@ -39,6 +40,7 @@ class TraceBuffer:
     model: Optional[str] = None
     last_error: Optional[str] = None
     last_update: float = field(default_factory=time.time)
+    last_emit: float = field(default_factory=lambda: 0.0)
 
     def add(self, ev: Dict) -> None:
         self.events.append({"name": ev["name"], "timestamp": ev["timestamp"]})
@@ -124,7 +126,7 @@ def classify_status(result: Dict, stale_flush: bool, buffer: TraceBuffer) -> Tup
     return "ok", buffer.last_error
 
 
-def enrich_result(result: Dict, stale_flush: bool, buffer: TraceBuffer) -> Dict:
+def enrich_result(result: Dict, stale_flush: bool, buffer: TraceBuffer, partial: bool = False) -> Dict:
     status, reason = classify_status(result, stale_flush, buffer)
     result["status"] = status
     result["error_reason"] = reason
@@ -132,6 +134,7 @@ def enrich_result(result: Dict, stale_flush: bool, buffer: TraceBuffer) -> Dict:
     result["provider"] = buffer.provider
     result["model"] = buffer.model
     result["event_timeline"] = buffer.event_timeline
+    result["partial"] = partial
     return result
 
 
@@ -156,10 +159,17 @@ class TraceAggregator:
             f"aggregated_events={len(buf.events)} open_traces={len(self.traces)}"
         )
 
+        now = time.time()
         if buf.ready():
             result = analyze({"traceId": tid, "events": buf.events})
             self.traces.pop(tid, None)
-            return [enrich_result(result, stale_flush=False, buffer=buf)]
+            return [enrich_result(result, stale_flush=False, buffer=buf, partial=False)]
+
+        # 即使未完成也周期性推送部分链路，确保前端“有反应”
+        if now - buf.last_emit >= 1.0:
+            buf.last_emit = now
+            partial = analyze({"traceId": tid, "events": buf.events})
+            return [enrich_result(partial, stale_flush=False, buffer=buf, partial=True)]
 
         return []
 
@@ -170,7 +180,7 @@ class TraceAggregator:
         for tid in stale:
             buf = self.traces.pop(tid)
             result = analyze({"traceId": tid, "events": buf.events})
-            results.append(enrich_result(result, stale_flush=True, buffer=buf))
+            results.append(enrich_result(result, stale_flush=True, buffer=buf, partial=False))
             dlog(f"stale_flush key_type={buf.key_type} key={tid} open_traces={len(self.traces)}")
         return results
 
@@ -199,6 +209,7 @@ def tail_events(log_path: str, from_beginning: bool = False, poll_interval: floa
     inode = None
     offset_to_end = not from_beginning
     read_count = 0
+    skip_stats: Dict[str, int] = {}
     target_path: Optional[Path] = None
     last_idle_log = 0.0
 
@@ -236,10 +247,13 @@ def tail_events(log_path: str, from_beginning: bool = False, poll_interval: floa
             continue
 
         read_count += 1
-        dlog(f"line_read_count={read_count} bytes={len(line)} file={target_path.name}")
+        if VERBOSE or read_count % 200 == 0:
+            dlog(f"line_read_count={read_count} bytes={len(line)} file={target_path.name}")
         ev, reason = parse_line(line)
         if ev is None:
-            dlog(f"line_skipped reason={reason}")
+            skip_stats[reason or "unknown"] = skip_stats.get(reason or "unknown", 0) + 1
+            if VERBOSE or read_count % 200 == 0:
+                dlog(f"line_skipped reason={reason} skip_stats={skip_stats}")
             continue
 
         dlog(
