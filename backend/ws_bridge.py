@@ -76,6 +76,8 @@ class WsBridge:
             wlog(f"broadcast_sent clients={len(self.clients)} traceId={payload.get('traceId')}")
 
     async def handler(self, websocket: Any) -> None:
+        import websockets
+
         self.clients.add(websocket)
         wlog(f"client_connected total={len(self.clients)}")
         snapshot = json.dumps({"type": "snapshot", "data": self.latest_results, "meta": {"logFile": self.log_file}}, ensure_ascii=False)
@@ -83,6 +85,8 @@ class WsBridge:
         try:
             async for _ in websocket:
                 pass
+        except websockets.exceptions.ConnectionClosed:
+            wlog("client_connection_closed")
         finally:
             self.clients.discard(websocket)
             wlog(f"client_disconnected total={len(self.clients)}")

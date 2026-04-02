@@ -27,23 +27,48 @@ function useTraceSocket(onUpsert) {
   const [sourceLogFile, setSourceLogFile] = useState('-');
   const [activeWsUrl, setActiveWsUrl] = useState('-');
   const retryRef = useRef(null);
+  const socketRef = useRef(null);
 
   useEffect(() => {
-    let ws;
     let closedByUser = false;
     const candidates = buildWsCandidates();
+    let activeIndex = 0;
+
+    const clearRetry = () => {
+      if (retryRef.current) {
+        clearTimeout(retryRef.current);
+        retryRef.current = null;
+      }
+    };
+
+    const closeActiveSocket = () => {
+      if (!socketRef.current) return;
+      try {
+        socketRef.current.onopen = null;
+        socketRef.current.onclose = null;
+        socketRef.current.onerror = null;
+        socketRef.current.onmessage = null;
+        socketRef.current.close();
+      } catch {}
+      socketRef.current = null;
+    };
 
     const connect = (idx = 0) => {
+      if (closedByUser) return;
       if (idx >= candidates.length) {
         setStatus('error');
+        clearRetry();
         retryRef.current = setTimeout(() => connect(0), 1500);
         return;
       }
 
       const url = candidates[idx];
+      activeIndex = idx;
+      closeActiveSocket();
       setStatus('connecting');
       setActiveWsUrl(url);
-      ws = new WebSocket(url);
+      const ws = new WebSocket(url);
+      socketRef.current = ws;
 
       const fallbackTimer = setTimeout(() => {
         if (ws && ws.readyState !== WebSocket.OPEN) {
@@ -53,16 +78,16 @@ function useTraceSocket(onUpsert) {
 
       ws.onopen = () => {
         clearTimeout(fallbackTimer);
+        clearRetry();
         setStatus('connected');
         console.log('[ui-ws] connected', url);
       };
 
       ws.onclose = () => {
         clearTimeout(fallbackTimer);
-        if (closedByUser) return;
+        if (closedByUser || socketRef.current !== ws) return;
         console.log('[ui-ws] close, try next', url);
-        setStatus('error');
-        connect(idx + 1);
+        connect(activeIndex + 1);
       };
 
       ws.onerror = () => {
@@ -112,8 +137,8 @@ function useTraceSocket(onUpsert) {
 
     return () => {
       closedByUser = true;
-      if (retryRef.current) clearTimeout(retryRef.current);
-      if (ws) ws.close();
+      clearRetry();
+      closeActiveSocket();
     };
   }, [onUpsert]);
 
