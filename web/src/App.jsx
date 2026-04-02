@@ -49,7 +49,7 @@ function useTraceSocket(onUpsert) {
         if (ws && ws.readyState !== WebSocket.OPEN) {
           try { ws.close(); } catch {}
         }
-      }, 1200);
+      }, 5000);
 
       ws.onopen = () => {
         clearTimeout(fallbackTimer);
@@ -61,6 +61,7 @@ function useTraceSocket(onUpsert) {
         clearTimeout(fallbackTimer);
         if (closedByUser) return;
         console.log('[ui-ws] close, try next', url);
+        setStatus('error');
         connect(idx + 1);
       };
 
@@ -75,8 +76,10 @@ function useTraceSocket(onUpsert) {
         if (msg.meta?.logFile) setSourceLogFile(msg.meta.logFile);
 
         if (msg.type === 'snapshot') {
-          setTraces(msg.data || []);
-          console.log('[ui-state] recent list size', (msg.data || []).length);
+          const snap = msg.data || [];
+          setTraces(snap);
+          if (snap.length > 0) onUpsert?.(snap[0].traceId);
+          console.log('[ui-state] recent list size', snap.length);
           return;
         }
 
