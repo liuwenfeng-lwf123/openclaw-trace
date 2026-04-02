@@ -188,22 +188,32 @@ class TraceAggregator:
 
 
 def _select_log_target(config_path: str, current: Optional[Path]) -> Optional[Path]:
+    def newest_in_dir(base_dir: Path) -> Optional[Path]:
+        candidates: List[Path] = []
+        candidates.extend(base_dir.glob("openclaw-*.log"))
+        candidates.extend(base_dir.glob("*.log"))
+        uniq = {p.resolve(): p for p in candidates if p.is_file()}
+        ordered = sorted(uniq.values(), key=lambda x: x.stat().st_mtime, reverse=True)
+        return ordered[0] if ordered else None
+
     # explicit glob support
     if "*" in config_path:
         matches = sorted([Path(x) for x in glob.glob(config_path)], key=lambda x: x.stat().st_mtime, reverse=True)
-        return matches[0] if matches else None
+        if matches:
+            return matches[0]
+        # fallback to broader *.log discovery in same folder
+        return newest_in_dir(Path(config_path).parent)
 
     p = Path(config_path)
     if p.exists():
         # if sibling daily file newer, switch to newer file
-        siblings = sorted(p.parent.glob("openclaw-*.log"), key=lambda x: x.stat().st_mtime, reverse=True)
-        if siblings and siblings[0].stat().st_mtime > p.stat().st_mtime:
-            return siblings[0]
+        sibling_newest = newest_in_dir(p.parent)
+        if sibling_newest and sibling_newest.stat().st_mtime > p.stat().st_mtime:
+            return sibling_newest
         return p
 
     # fallback: try newest openclaw daily log in same dir
-    siblings = sorted(p.parent.glob("openclaw-*.log"), key=lambda x: x.stat().st_mtime, reverse=True)
-    return siblings[0] if siblings else None
+    return newest_in_dir(p.parent)
 
 
 def tail_events(log_path: str, from_beginning: bool = False, poll_interval: float = 0.5) -> Generator[Dict, None, None]:
@@ -238,6 +248,10 @@ def tail_events(log_path: str, from_beginning: bool = False, poll_interval: floa
                 fp.seek(0, os.SEEK_END)
                 offset_to_end = False
                 dlog("seek_to_end_for_tail_mode")
+        elif fp.tell() > stat.st_size:
+            # handle truncate-in-place rotation (inode unchanged, file shrinks)
+            dlog(f"log_file_truncated path={target_path} old_offset={fp.tell()} new_size={stat.st_size} -> seek_start")
+            fp.seek(0)
 
         line = fp.readline()
         if not line:

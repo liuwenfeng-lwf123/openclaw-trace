@@ -50,7 +50,7 @@
 export OPENCLAW_TRACE_DEBUG=1
 # 如需逐行日志再开
 export OPENCLAW_TRACE_DEBUG_VERBOSE=0
-LOG_FILE="/tmp/openclaw/openclaw-$(date +%F).log"
+LOG_FILE="/tmp/openclaw/openclaw-*.log"
 python3 backend/ws_bridge.py --log-file "$LOG_FILE" --tail
 ```
 
@@ -69,7 +69,7 @@ npm run dev
 
 ```bash
 ID=<页面新出现ID>
-rg "$ID" "/tmp/openclaw/openclaw-$(date +%F).log" | head -n 20
+rg "$ID" /tmp/openclaw/*.log | head -n 20
 ```
 
 ## 排障（你现在这个“页面无新增”场景）

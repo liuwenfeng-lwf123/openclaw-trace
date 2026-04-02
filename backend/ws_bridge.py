@@ -122,7 +122,7 @@ class WsBridge:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="OpenClaw realtime WebSocket bridge")
-    parser.add_argument("--log-file", default="logs/openclaw-runtime.jsonl")
+    parser.add_argument("--log-file", default="/tmp/openclaw/openclaw-*.log")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--tail", action="store_true", help="Only stream new lines")
