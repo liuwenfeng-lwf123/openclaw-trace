@@ -224,59 +224,67 @@ def tail_events(log_path: str, from_beginning: bool = False, poll_interval: floa
     skip_stats: Dict[str, int] = {}
     target_path: Optional[Path] = None
     last_idle_log = 0.0
+    last_size = 0
 
-    while True:
-        selected = _select_log_target(log_path, target_path)
-        if selected is None:
-            dlog(f"waiting_log_file path={log_path}")
-            time.sleep(poll_interval)
-            continue
+    try:
+        while True:
+            selected = _select_log_target(log_path, target_path)
+            if selected is None:
+                dlog(f"waiting_log_file path={log_path}")
+                time.sleep(poll_interval)
+                continue
 
-        if target_path is None or selected != target_path:
-            dlog(f"log_target_switched old={target_path} new={selected}")
-            target_path = selected
-            inode = None
+            if target_path is None or selected != target_path:
+                dlog(f"log_target_switched old={target_path} new={selected}")
+                target_path = selected
+                inode = None
+                last_size = 0
 
-        stat = target_path.stat()
-        if fp is None or inode != stat.st_ino:
-            if fp is not None:
-                fp.close()
-            fp = open(target_path, "r", encoding="utf-8")
-            inode = stat.st_ino
-            dlog(f"opened_log_file path={target_path} inode={inode}")
-            if offset_to_end:
-                fp.seek(0, os.SEEK_END)
-                offset_to_end = False
-                dlog("seek_to_end_for_tail_mode")
-        elif fp.tell() > stat.st_size:
-            # handle truncate-in-place rotation (inode unchanged, file shrinks)
-            dlog(f"log_file_truncated path={target_path} old_offset={fp.tell()} new_size={stat.st_size} -> seek_start")
-            fp.seek(0)
+            stat = target_path.stat()
+            if fp is None or inode != stat.st_ino:
+                if fp is not None:
+                    fp.close()
+                fp = open(target_path, "r", encoding="utf-8")
+                inode = stat.st_ino
+                last_size = stat.st_size
+                dlog(f"opened_log_file path={target_path} inode={inode}")
+                if offset_to_end:
+                    fp.seek(0, os.SEEK_END)
+                    offset_to_end = False
+                    dlog("seek_to_end_for_tail_mode")
+            elif stat.st_size < last_size or fp.tell() > stat.st_size:
+                # handle truncate-in-place rotation (inode unchanged, file shrinks)
+                dlog(f"log_file_truncated path={target_path} old_offset={fp.tell()} new_size={stat.st_size} -> seek_start")
+                fp.seek(0)
+            last_size = stat.st_size
 
-        line = fp.readline()
-        if not line:
-            now = time.time()
-            if now - last_idle_log > 5:
-                dlog(f"tail_idle waiting_new_line file={target_path}")
-                last_idle_log = now
-            time.sleep(poll_interval)
-            continue
+            line = fp.readline()
+            if not line:
+                now = time.time()
+                if now - last_idle_log > 5:
+                    dlog(f"tail_idle waiting_new_line file={target_path}")
+                    last_idle_log = now
+                time.sleep(poll_interval)
+                continue
 
-        read_count += 1
-        if VERBOSE or read_count % 200 == 0:
-            dlog(f"line_read_count={read_count} bytes={len(line)} file={target_path.name}")
-        ev, reason = parse_line(line)
-        if ev is None:
-            skip_stats[reason or "unknown"] = skip_stats.get(reason or "unknown", 0) + 1
+            read_count += 1
             if VERBOSE or read_count % 200 == 0:
-                dlog(f"line_skipped reason={reason} skip_stats={skip_stats}")
-            continue
+                dlog(f"line_read_count={read_count} bytes={len(line)} file={target_path.name}")
+            ev, reason = parse_line(line)
+            if ev is None:
+                skip_stats[reason or "unknown"] = skip_stats.get(reason or "unknown", 0) + 1
+                if VERBOSE or read_count % 200 == 0:
+                    dlog(f"line_skipped reason={reason} skip_stats={skip_stats}")
+                continue
 
-        dlog(
-            f"line_parsed_ok event={ev['name']} key_type={ev['groupKeyType']} "
-            f"key={ev['traceId']} module={ev['module']}"
-        )
-        yield ev
+            dlog(
+                f"line_parsed_ok event={ev['name']} key_type={ev['groupKeyType']} "
+                f"key={ev['traceId']} module={ev['module']}"
+            )
+            yield ev
+    finally:
+        if fp is not None:
+            fp.close()
 
 
 def process_file(
