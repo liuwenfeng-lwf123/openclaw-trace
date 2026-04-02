@@ -1,0 +1,9 @@
+{"ts":"2026-04-01T10:00:00.000Z","event":"dashboard.send.click","traceId":"trace-live-001","module":"dashboard-web","function":"ChatInput.onSendClick"}
+{"ts":"2026-04-01T10:00:00.028Z","event":"dashboard.request.sent","traceId":"trace-live-001","module":"dashboard-web","function":"apiClient.sendMessage"}
+{"ts":"2026-04-01T10:00:00.095Z","event":"gateway.message.received","traceId":"trace-live-001","module":"gateway-api","function":"POST /v1/chat/messages"}
+{"ts":"2026-04-01T10:00:00.220Z","event":"gateway.processing.start","traceId":"trace-live-001","module":"gateway-service","function":"MessageOrchestrator.handle"}
+{"ts":"2026-04-01T10:00:00.290Z","event":"provider.request.start","traceId":"trace-live-001","module":"gateway-provider","function":"ProviderClient.stream"}
+{"ts":"2026-04-01T10:00:01.240Z","event":"provider.first_token","traceId":"trace-live-001","module":"gateway-provider","function":"ProviderStream.onToken"}
+{"ts":"2026-04-01T10:00:02.760Z","event":"provider.response.complete","traceId":"trace-live-001","module":"gateway-provider","function":"ProviderStream.onComplete"}
+{"ts":"2026-04-01T10:00:02.810Z","event":"dashboard.push.start","traceId":"trace-live-001","module":"gateway-push","function":"PushHub.publish"}
+{"ts":"2026-04-01T10:00:02.920Z","event":"dashboard.render.done","traceId":"trace-live-001","module":"dashboard-web","function":"ChatMessageList.onRenderDone"}
