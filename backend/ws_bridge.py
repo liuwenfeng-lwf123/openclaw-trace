@@ -90,8 +90,11 @@ class WsBridge:
     async def run(self, host: str, port: int) -> None:
         import websockets
 
-        Path(self.log_file).parent.mkdir(parents=True, exist_ok=True)
-        Path(self.log_file).touch(exist_ok=True)
+        if "*" not in self.log_file:
+            Path(self.log_file).parent.mkdir(parents=True, exist_ok=True)
+            Path(self.log_file).touch(exist_ok=True)
+        else:
+            wlog(f"glob_log_path_detected skip_touch path={self.log_file}")
 
         self.loop = asyncio.get_running_loop()
         self.loop.run_in_executor(

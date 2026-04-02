@@ -71,7 +71,19 @@ function useTraceSocket(onUpsert) {
       };
 
       ws.onmessage = (evt) => {
-        const msg = JSON.parse(evt.data);
+        let msg;
+        try {
+          msg = JSON.parse(evt.data);
+        } catch (err) {
+          console.warn('[ui-ws] invalid payload', err, evt.data);
+          return;
+        }
+
+        if (!msg || typeof msg !== 'object') {
+          console.warn('[ui-ws] unexpected payload type', msg);
+          return;
+        }
+
         console.log('[ui-ws] payload', msg);
         if (msg.meta?.logFile) setSourceLogFile(msg.meta.logFile);
 
